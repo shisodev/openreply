@@ -13,12 +13,12 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function GET(request: NextRequest) {
-  const auth = await checkApiKey(request);
-  if (!auth.ok) return NextResponse.json({ error: auth.error }, { status: auth.status });
-
-  // O chamador JÁ passou pela chave, então devolver o motivo da falha aqui é diagnóstico, não
-  // vazamento — e um 500 mudo num ping é exatamente o que faz alguém perder uma tarde.
+  // O try cobre TAMBÉM a checagem da chave: um erro ali (banco fora do ar, coluna faltando numa
+  // migração pendente) virava 500 de corpo vazio, que não diz nada a quem está ligando o serviço.
   try {
+    const auth = await checkApiKey(request);
+    if (!auth.ok) return NextResponse.json({ error: auth.error }, { status: auth.status });
+
     // chave de workspace enxerga só as contas DELE; a chave da instância enxerga todas
     const accounts = await prisma.instagramAccount.findMany({
       where: escopo(auth.workspaceId),
