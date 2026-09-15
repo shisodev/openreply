@@ -178,6 +178,10 @@ model Automation {
   postId         String?
   postUrl        String?
   pendingNextReel Boolean @default(false)
+  // Legenda com que o post foi publicado, quando quem criou a campanha ainda não
+  // sabia o id do reel (ela foi criada ANTES de o reel existir). É o que permite
+  // casar a campanha certa com o reel certo quando vários saem no mesmo dia.
+  bindCaption     String?
   matchAnyPost   Boolean @default(false)
   keywords       String[]
   matchAnyWord   Boolean @default(false)
