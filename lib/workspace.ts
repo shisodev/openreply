@@ -72,8 +72,17 @@ export async function ensureWorkspaceForUser(
   userId: string,
   email?: string | null
 ): Promise<Workspace> {
-  await acceptPendingInvitationsForUser(userId, email);
-
+  // ⚠️ NÃO aceite convite aqui.
+  //
+  // Antes esta função chamava acceptPendingInvitationsForUser() antes de tudo: quem se
+  // cadastrava com um e-mail que alguém já tinha convidado virava membro daquele workspace
+  // sem clicar em nada — e, como só existe "a primeira membership", a pessoa nunca ganhava o
+  // workspace dela. Toda conta de Instagram que ela conectasse, todo DM e todo relatório
+  // passavam a viver dentro do workspace de quem convidou. Com cadastro aberto, a cadeia era:
+  // convidar o e-mail da vítima → esperar ela se cadastrar → ler tudo.
+  //
+  // O aceite tem dono: a rota /api/workspace/invitations/accept, que confere e-mail, validade
+  // e status, e exige um clique. Aqui, todo usuário novo ganha o workspace DELE.
   const existingMembership = await getWorkspaceMembership(userId);
   if (existingMembership) {
     return existingMembership.workspace;
