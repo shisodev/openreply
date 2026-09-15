@@ -87,6 +87,8 @@ model Workspace {
   operationalEvents OperationalEvent[]
 
   @@index([ownerId])
+  apiKeys           ApiKey[]
+
 }
 
 model WorkspaceMember {
@@ -166,6 +168,25 @@ model FollowerSnapshot {
 
   @@unique([instagramAccountId, date])
   @@index([instagramAccountId, date])
+}
+
+/// Chave de API por WORKSPACE. Sem isto a superfície /api/v1 tem uma chave só pra
+/// instância inteira — e num servidor com vários clientes isso significa que a chave de
+/// um lê, edita e apaga as campanhas de todos. Guardamos só o hash: a chave é mostrada
+/// uma vez, na criação, e nunca mais.
+model ApiKey {
+  id          String    @id @default(cuid())
+  workspaceId String
+  name        String
+  prefix      String    // 8 primeiros caracteres, pra identificar na lista sem revelar a chave
+  hash        String    @unique
+  createdAt   DateTime  @default(now())
+  lastUsedAt  DateTime?
+  revokedAt   DateTime?
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId])
 }
 
 model Automation {

@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { prisma } from "@/lib/db/client";
-import { checkApiKey } from "@/lib/api-key";
+import { checkApiKey, escopo } from "@/lib/api-key";
 import { getWorkspaceInstagramAccount } from "@/lib/instagram-accounts";
 import { buildReportUrl, generateReportShareSlug } from "@/lib/reports/share";
 import { buildTrackedUrl } from "@/lib/tracking/message";
@@ -52,7 +52,7 @@ const bodySchema = z
   });
 
 export async function POST(request: NextRequest) {
-  const auth = checkApiKey(request);
+  const auth = await checkApiKey(request);
   if (!auth.ok) return NextResponse.json({ error: auth.error }, { status: auth.status });
 
   const parsed = bodySchema.safeParse(await request.json().catch(() => null));
@@ -66,14 +66,15 @@ export async function POST(request: NextRequest) {
 
   // ---- resolve the Instagram account (and through it, the workspace) ----
   let account = null as Awaited<ReturnType<typeof getWorkspaceInstagramAccount>>;
+  const trava = escopo(auth.workspaceId);   // chave de workspace nunca enxerga fora dele
   if (d.instagramAccountId) {
-    account = await prisma.instagramAccount.findUnique({ where: { id: d.instagramAccountId } });
+    account = await prisma.instagramAccount.findFirst({ where: { id: d.instagramAccountId, ...trava } });
   } else if (d.instagramId) {
-    account = await prisma.instagramAccount.findUnique({ where: { instagramId: d.instagramId } });
+    account = await prisma.instagramAccount.findFirst({ where: { instagramId: d.instagramId, ...trava } });
   } else if (d.instagramUsername) {
     // username is not unique in the schema — two matches is ambiguous, not a guess to make
     const hits = await prisma.instagramAccount.findMany({
-      where: { username: d.instagramUsername },
+      where: { username: d.instagramUsername, ...trava },
       take: 2,
     });
     if (hits.length > 1) {
@@ -84,7 +85,13 @@ export async function POST(request: NextRequest) {
     }
     account = hits[0] ?? null;
   } else if (d.workspaceId) {
+    // com chave de workspace, pedir OUTRO workspace no corpo não vale
+    if (auth.workspaceId && auth.workspaceId !== d.workspaceId) {
+      return NextResponse.json({ error: "No connected Instagram account for that target" }, { status: 404 });
+    }
     account = await getWorkspaceInstagramAccount(d.workspaceId, null);
+  } else if (auth.workspaceId) {
+    account = await getWorkspaceInstagramAccount(auth.workspaceId, null);
   } else {
     // Sem alvo no payload: só resolve quando NÃO HÁ o que adivinhar — exatamente uma
     // conta conectada na instância inteira. Com duas, responde 409 pedindo o alvo, em

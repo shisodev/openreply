@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { prisma } from "@/lib/db/client";
-import { checkApiKey } from "@/lib/api-key";
+import { checkApiKey, escopo } from "@/lib/api-key";
 import { buildTrackedUrl } from "@/lib/tracking/message";
 import { generateTrackedLinkSlug } from "@/lib/tracking/server";
 
@@ -28,19 +28,22 @@ const patchSchema = z.object({
   name: z.string().min(1).max(100).optional(),
 });
 
-async function achar(id: string) {
-  return prisma.automation.findUnique({
-    where: { id },
+// ⚠️ findFirst com o escopo da chave, NUNCA findUnique só por id: com uma chave de
+// workspace, procurar campanha alheia tem que devolver "não existe" — senão esta rota
+// vira leitura, edição e exclusão das campanhas de todos os outros clientes.
+async function achar(id: string, workspaceId: string | null) {
+  return prisma.automation.findFirst({
+    where: { id, ...escopo(workspaceId) },
     include: { trackedLinks: true, instagramAccount: { select: { id: true, username: true } } },
   });
 }
 
 export async function GET(request: NextRequest, ctx: { params: Promise<{ id: string }> }) {
-  const auth = checkApiKey(request);
+  const auth = await checkApiKey(request);
   if (!auth.ok) return NextResponse.json({ error: auth.error }, { status: auth.status });
 
   const { id } = await ctx.params;
-  const a = await achar(id);
+  const a = await achar(id, auth.workspaceId);
   if (!a) return NextResponse.json({ error: "Campaign not found" }, { status: 404 });
 
   return NextResponse.json({
@@ -62,11 +65,11 @@ export async function GET(request: NextRequest, ctx: { params: Promise<{ id: str
 }
 
 export async function PATCH(request: NextRequest, ctx: { params: Promise<{ id: string }> }) {
-  const auth = checkApiKey(request);
+  const auth = await checkApiKey(request);
   if (!auth.ok) return NextResponse.json({ error: auth.error }, { status: auth.status });
 
   const { id } = await ctx.params;
-  const atual = await achar(id);
+  const atual = await achar(id, auth.workspaceId);
   if (!atual) return NextResponse.json({ error: "Campaign not found" }, { status: 404 });
 
   const parsed = patchSchema.safeParse(await request.json().catch(() => null));
@@ -86,10 +89,10 @@ export async function PATCH(request: NextRequest, ctx: { params: Promise<{ id: s
 
   const atualizada = await prisma.$transaction(async (tx) => {
     if (trocaLink) {
-      await tx.trackedLink.deleteMany({ where: { automationId: id } });
+      await tx.trackedLink.deleteMany({ where: { automationId: id, workspaceId: atual.workspaceId } });
     }
     return tx.automation.update({
-      where: { id },
+      where: { id: atual.id },
       data: {
         ...(d.name !== undefined ? { name: d.name } : {}),
         ...(d.keywords !== undefined ? { keywords: d.keywords } : {}),
@@ -133,13 +136,12 @@ export async function PATCH(request: NextRequest, ctx: { params: Promise<{ id: s
 }
 
 export async function DELETE(request: NextRequest, ctx: { params: Promise<{ id: string }> }) {
-  const auth = checkApiKey(request);
+  const auth = await checkApiKey(request);
   if (!auth.ok) return NextResponse.json({ error: auth.error }, { status: auth.status });
 
   const { id } = await ctx.params;
-  const a = await prisma.automation.findUnique({ where: { id }, select: { id: true } });
-  if (!a) return NextResponse.json({ error: "Campaign not found" }, { status: 404 });
-
-  await prisma.automation.delete({ where: { id } });
+  // deleteMany com escopo: apagar campanha de outro workspace devolve 404, não apaga
+  const r = await prisma.automation.deleteMany({ where: { id, ...escopo(auth.workspaceId) } });
+  if (!r.count) return NextResponse.json({ error: "Campaign not found" }, { status: 404 });
   return NextResponse.json({ ok: true, id });
 }

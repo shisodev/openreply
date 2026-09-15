@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db/client";
-import { checkApiKey } from "@/lib/api-key";
+import { checkApiKey, escopo } from "@/lib/api-key";
 
 /**
  * Connection test for an external system.
@@ -13,10 +13,12 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function GET(request: NextRequest) {
-  const auth = checkApiKey(request);
+  const auth = await checkApiKey(request);
   if (!auth.ok) return NextResponse.json({ error: auth.error }, { status: auth.status });
 
+  // chave de workspace enxerga só as contas DELE; a chave da instância enxerga todas
   const accounts = await prisma.instagramAccount.findMany({
+    where: escopo(auth.workspaceId),
     select: { id: true, instagramId: true, username: true, workspaceId: true },
     orderBy: { connectedAt: "desc" },
     take: 25,
