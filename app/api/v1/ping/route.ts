@@ -22,11 +22,17 @@ export async function GET(request: NextRequest) {
     // chave de workspace enxerga só as contas DELE; a chave da instância enxerga todas
     const accounts = await prisma.instagramAccount.findMany({
       where: escopo(auth.workspaceId),
-      select: { id: true, instagramId: true, username: true, workspaceId: true },
+      select: {
+        id: true, instagramId: true, username: true, workspaceId: true,
+        // Saúde da conexão. Sem isto o ping respondia "ok" com o token do Instagram prestes a
+        // vencer — e quando vence, TODA campanha para em silêncio, sem nada na tela de fora.
+        provider: true, tokenExpiresAt: true, webhookSubscribed: true, connectedAt: true,
+      },
       orderBy: { connectedAt: "desc" },
       take: 25,
     });
 
+    const agora = Date.now();
     return NextResponse.json({
       ok: true,
       accounts: accounts.map((a) => ({
@@ -34,6 +40,15 @@ export async function GET(request: NextRequest) {
         username: a.username,
         instagramId: a.instagramId,
         workspaceId: a.workspaceId,
+        provider: a.provider,
+        webhookSubscribed: a.webhookSubscribed,
+        tokenExpiresAt: a.tokenExpiresAt,
+        // dias que faltam pro token vencer (null quando o provedor cuida da renovação e não
+        // informa validade — é o caso do Zernio). Negativo = já venceu.
+        tokenDiasRestantes:
+          a.tokenExpiresAt == null
+            ? null
+            : Math.floor((a.tokenExpiresAt.getTime() - agora) / 86400000),
       })),
     });
   } catch (e) {
