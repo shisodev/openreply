@@ -34,7 +34,12 @@ const bodySchema = z
     instagramUsername: z.string().min(1).optional().nullable(),
 
     name: z.string().min(1).max(100).optional(),
-    keywords: z.array(z.string().min(1).max(50)).min(1).max(10),
+    goal: z.string().min(1).max(120).optional().nullable(),
+    // `min(1)` saiu: com `matchAnyWord` a campanha responde a QUALQUER comentário e não há
+    // palavra-chave pra exigir. O refine no fim garante que uma das duas coisas exista.
+    keywords: z.array(z.string().min(1).max(50)).max(10).optional().default([]),
+    matchAnyWord: z.boolean().optional().default(false),
+    matchAnyPost: z.boolean().optional().default(false),
     dmMessage: z.string().min(1).max(1000),
     // Which reel: an id if the caller already knows it, otherwise the caption
     // it published with, otherwise plain "my next reel".
@@ -43,12 +48,38 @@ const bodySchema = z
 
     linkUrl: z.union([z.string().url(), z.literal("")]).optional().nullable(),
     linkLabel: z.string().max(20).optional().nullable(),
+    // segundo link, que vira um segundo botão no direct
+    secondaryLinkUrl: z.union([z.string().url(), z.literal("")]).optional().nullable(),
+    secondaryLinkLabel: z.string().max(20).optional().nullable(),
     publicReplyMessage: z.string().max(1000).optional().nullable(),
+    // Várias respostas públicas em RODÍZIO. Repetir a mesma frase embaixo de todo comentário é
+    // o que o Instagram lê como spam — o motor já sabe alternar, só não havia como mandar a lista.
+    publicReplyMessages: z.array(z.string().max(1000)).max(10).optional().default([]),
     requireFollow: z.boolean().optional().default(false),
     followPromptMessage: z.string().max(1000).optional().nullable(),
+    followPromptButtonLabel: z.string().max(20).optional().nullable(),
+    // DM de abertura: a primeira mensagem, com botão, antes de entregar o link
+    openingDmEnabled: z.boolean().optional().default(false),
+    openingDmMessage: z.string().max(1000).optional().nullable(),
+    openingDmButtonLabel: z.string().max(64).optional().nullable(),
+    // segunda mensagem, minutos depois. Teto de 24h porque é a janela da Meta.
+    followUpEnabled: z.boolean().optional().default(false),
+    followUpMessage: z.string().max(1000).optional().nullable(),
+    followUpDelayMinutes: z.number().int().min(0).max(1440).optional().default(0),
     dmTriggerEnabled: z.boolean().optional().default(false),
     wholeWordMatch: z.boolean().optional().default(true),
     isActive: z.boolean().optional().default(true),
+  })
+  .refine((d) => d.matchAnyWord || d.keywords.length >= 1, {
+    message: "Mande ao menos uma palavra-chave, ou ligue matchAnyWord",
+    path: ["keywords"],
+  })
+  .refine(
+    (d) => !d.openingDmEnabled || (Boolean(d.openingDmMessage?.trim()) && Boolean(d.openingDmButtonLabel?.trim())),
+    { message: "A DM de abertura precisa de mensagem E rótulo de botão", path: ["openingDmMessage"] }
+  )
+  .refine((d) => !d.followUpEnabled || Boolean(d.followUpMessage?.trim()), {
+    message: "O follow-up precisa de mensagem", path: ["followUpMessage"],
   });
 
 export async function POST(request: NextRequest) {
@@ -120,36 +151,49 @@ export async function POST(request: NextRequest) {
   const workspaceId = account.workspaceId;
   const pendingNextReel = !d.postId;
 
-  const linkCreates = d.linkUrl
-    ? [
-        {
-          workspaceId,
-          slug: generateTrackedLinkSlug(),
-          label: "Primary campaign link",
-          destinationUrl: d.linkUrl,
-        },
-      ]
-    : [];
+  const linkCreates = [
+    ...(d.linkUrl
+      ? [{ workspaceId, slug: generateTrackedLinkSlug(), label: "Primary campaign link", destinationUrl: d.linkUrl }]
+      : []),
+    ...(d.secondaryLinkUrl
+      // ⚠️ o rótulo do 2º botão mora AQUI, no label do link — não existe `secondaryButtonLabel`
+      // no model Automation. O motor (lib/queue/dm-worker.ts:102) usa primaryLabel no 1º botão e
+      // `link.label` do 2º em diante, com teto de 3 botões que é o limite da Meta.
+      ? [{ workspaceId, slug: generateTrackedLinkSlug(), label: d.secondaryLinkLabel?.trim() || "Link 2", destinationUrl: d.secondaryLinkUrl }]
+      : []),
+  ];
 
-  const publicReply = d.publicReplyMessage?.trim() || "";
+  // Uma resposta pública só, ou uma lista em rodízio. Quem manda a lista manda a lista; quem manda
+  // a frase única continua funcionando igual (é o que o Framely fazia até aqui).
+  const respostasPublicas = (d.publicReplyMessages || []).map((m) => m.trim()).filter(Boolean);
+  const publicReply = d.publicReplyMessage?.trim() || respostasPublicas[0] || "";
+  const listaPublicas = respostasPublicas.length ? respostasPublicas : publicReply ? [publicReply] : [];
 
   const automation = await prisma.automation.create({
     data: {
       name: d.name?.trim() || `API · ${new Date().toISOString().slice(0, 10)}`,
+      goal: d.goal?.trim() || null,
       postId: d.postId ?? null,
       pendingNextReel,
       bindCaption: pendingNextReel ? d.bindCaption?.trim() || null : null,
-      matchAnyPost: false,
+      matchAnyPost: d.matchAnyPost,
       keywords: d.keywords,
-      matchAnyWord: false,
+      matchAnyWord: d.matchAnyWord,
       dmTriggerEnabled: d.dmTriggerEnabled,
       dmMessage: d.dmMessage,
       linkButtonLabel: d.linkLabel?.trim() || null,
+      openingDmEnabled: d.openingDmEnabled,
+      openingDmMessage: d.openingDmEnabled ? d.openingDmMessage?.trim() || null : null,
+      openingDmButtonLabel: d.openingDmEnabled ? d.openingDmButtonLabel?.trim() || null : null,
+      followUpEnabled: d.followUpEnabled,
+      followUpMessage: d.followUpEnabled ? d.followUpMessage?.trim() || null : null,
+      followUpDelayMinutes: d.followUpDelayMinutes,
       requireFollow: d.requireFollow,
       followPromptMessage: d.requireFollow ? d.followPromptMessage?.trim() || null : null,
-      publicReplyEnabled: Boolean(publicReply),
+      followPromptButtonLabel: d.requireFollow ? d.followPromptButtonLabel?.trim() || null : null,
+      publicReplyEnabled: listaPublicas.length > 0,
       publicReplyMessage: publicReply || null,
-      publicReplyMessages: publicReply ? [publicReply] : [],
+      publicReplyMessages: listaPublicas,
       isActive: d.isActive,
       wholeWordMatch: d.wholeWordMatch,
       workspaceId,
@@ -167,5 +211,12 @@ export async function POST(request: NextRequest) {
     account: { id: account.id, username: account.username },
     reportUrl: automation.reportShareSlug ? buildReportUrl(automation.reportShareSlug) : null,
     trackedUrls: automation.trackedLinks.map((l) => buildTrackedUrl(l.slug)),
+    // o link RASTREADO não diz nada pra quem configurou ("/r/abc123"). Devolver junto o destino
+    // real deixa a tela mostrar o wa.me que a pessoa digitou, que é o que ela reconhece.
+    links: automation.trackedLinks.map((l) => ({
+      trackedUrl: buildTrackedUrl(l.slug),
+      destinationUrl: l.destinationUrl,
+      label: l.label,
+    })),
   });
 }
