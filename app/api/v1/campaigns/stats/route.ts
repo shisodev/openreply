@@ -47,9 +47,12 @@ export async function GET(request: NextRequest) {
     }),
   ]);
 
-  const stats: Record<string, { dms: number; cliques: number; ativa: boolean; postId: string | null }> = {};
+  // ⚠️ `ativa` funde DUAS coisas (ligada E já casada com o reel), então quem lê de fora não
+  // consegue distinguir "pausada" de "esperando o reel" — e o botão de RETOMAR, que depende
+  // dessa distinção, ficava inalcançável pra campanha pausada antes de casar.
+  const stats: Record<string, { dms: number; cliques: number; ativa: boolean; ligada: boolean; esperandoReel: boolean; postId: string | null }> = {};
   for (const c of campanhas) {
-    stats[c.id] = { dms: 0, cliques: 0, ativa: c.isActive && !c.pendingNextReel, postId: c.postId };
+    stats[c.id] = { dms: 0, cliques: 0, ativa: c.isActive && !c.pendingNextReel, ligada: c.isActive, esperandoReel: c.pendingNextReel, postId: c.postId };
   }
   for (const r of dms) if (stats[r.automationId]) stats[r.automationId].dms = r._count._all;
   for (const r of cliques) if (stats[r.automationId]) stats[r.automationId].cliques = r._count._all;
