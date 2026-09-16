@@ -43,7 +43,21 @@ const patchSchema = z.object({
   wholeWordMatch: z.boolean().optional(),
   reportShareEnabled: z.boolean().optional(),
   name: z.string().min(1).max(100).optional(),
-});
+})
+  // Espelha os refines do POST. Sem eles dava pra LIGAR follow-up/DM de abertura sem texto por
+  // PATCH — o motor simplesmente não agenda nada e o dono só descobre pela ausência do efeito.
+  .refine((d) => !(d.openingDmEnabled === true) || Boolean(d.openingDmMessage?.trim()), {
+    message: "A DM de abertura precisa de mensagem", path: ["openingDmMessage"],
+  })
+  .refine((d) => !(d.followUpEnabled === true) || Boolean(d.followUpMessage?.trim()), {
+    message: "O follow-up precisa de mensagem", path: ["followUpMessage"],
+  })
+  // keywords: [] sem matchAnyWord deixa a campanha MUDA — o POST recusa a mesma combinação,
+  // então o PATCH também tem que recusar.
+  .refine((d) => !(d.keywords !== undefined && d.keywords.length === 0 && d.matchAnyWord !== true), {
+    message: "Sem palavra-chave a campanha não responde ninguém. Mande ao menos uma, ou ligue matchAnyWord.",
+    path: ["keywords"],
+  });
 
 // ⚠️ findFirst com o escopo da chave, NUNCA findUnique só por id: com uma chave de
 // workspace, procurar campanha alheia tem que devolver "não existe" — senão esta rota
@@ -127,7 +141,12 @@ export async function PATCH(request: NextRequest, ctx: { params: Promise<{ id: s
 
   const atualizada = await prisma.$transaction(async (tx) => {
     if (trocaLink) {
-      await tx.trackedLink.deleteMany({ where: { automationId: id, workspaceId: atual.workspaceId } });
+      // ⚠️ Só o link PRIMÁRIO. O deleteMany sem filtro apagava TODOS os links da campanha —
+      // inclusive o 2º botão que o POST passou a criar — e levava junto o histórico de cliques
+      // (LinkClick cai por cascade). Trocar o link principal não pode apagar o botão secundário
+      // nem o que já foi medido.
+      const primario = atual.trackedLinks.find((l) => l.label === "Primary campaign link") ?? atual.trackedLinks[0];
+      if (primario) await tx.trackedLink.delete({ where: { id: primario.id } });
     }
     return tx.automation.update({
       where: { id: atual.id },
@@ -142,10 +161,14 @@ export async function PATCH(request: NextRequest, ctx: { params: Promise<{ id: s
         ...(d.requireFollow !== undefined ? { requireFollow: d.requireFollow } : {}),
         ...(d.followPromptMessage !== undefined ? { followPromptMessage: d.followPromptMessage || null } : {}),
         ...(d.followPromptButtonLabel !== undefined ? { followPromptButtonLabel: d.followPromptButtonLabel || null } : {}),
-        ...(d.openingDmEnabled !== undefined ? { openingDmEnabled: d.openingDmEnabled } : {}),
+        // desligar LIMPA o texto, igual à rota de sessão. Sem isso, religar meses depois dispara
+        // pra cliente real uma mensagem antiga que o dono achava apagada.
+        ...(d.openingDmEnabled === false ? { openingDmEnabled: false, openingDmMessage: null, openingDmButtonLabel: null } : {}),
+        ...(d.openingDmEnabled === true ? { openingDmEnabled: true } : {}),
         ...(d.openingDmMessage !== undefined ? { openingDmMessage: d.openingDmMessage || null } : {}),
         ...(d.openingDmButtonLabel !== undefined ? { openingDmButtonLabel: d.openingDmButtonLabel || null } : {}),
-        ...(d.followUpEnabled !== undefined ? { followUpEnabled: d.followUpEnabled } : {}),
+        ...(d.followUpEnabled === false ? { followUpEnabled: false, followUpMessage: null } : {}),
+        ...(d.followUpEnabled === true ? { followUpEnabled: true } : {}),
         ...(d.followUpMessage !== undefined ? { followUpMessage: d.followUpMessage || null } : {}),
         ...(d.followUpDelayMinutes !== undefined ? { followUpDelayMinutes: d.followUpDelayMinutes } : {}),
         ...(d.dmTriggerEnabled !== undefined ? { dmTriggerEnabled: d.dmTriggerEnabled } : {}),

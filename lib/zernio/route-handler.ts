@@ -24,6 +24,13 @@ export function withZernioManagement(handler: (context: WorkspaceContext, reques
         // exatamente ao salvar a chave do Zernio — com tudo o resto certo.
         // A referência confiável é a URL pública configurada (NEXTAUTH_URL), a mesma que o app já
         // usa pra montar o webhook. O origin do request continua aceito pra não quebrar dev local.
+        // ⚠️ getBaseUrl() cai em http://localhost:3000 quando NEXTAUTH_URL não está setado — aí a
+        // "referência confiável" vira inútil e o guard volta a depender só do request, que é o
+        // que estava quebrado. Nada no projeto valida essa env, então avisa alto aqui: sem ela,
+        // o sintoma é este mesmo 403 e ninguém liga uma coisa à outra.
+        if (!process.env.NEXTAUTH_URL) {
+          console.error('[zernio] NEXTAUTH_URL não está setado — a checagem de origem fica sem referência pública e o salvar da chave pode falhar com "Invalid request origin.". Configure-o com a URL HTTPS pública desta instância.');
+        }
         const permitidas = new Set<string>();
         for (const candidata of [getBaseUrl(), new URL(request.url).origin]) {
           try { if (candidata) permitidas.add(new URL(candidata).origin); } catch { /* ignora inválida */ }

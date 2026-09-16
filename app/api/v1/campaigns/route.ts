@@ -149,7 +149,10 @@ export async function POST(request: NextRequest) {
   }
 
   const workspaceId = account.workspaceId;
-  const pendingNextReel = !d.postId;
+  // ⚠️ `matchAnyPost` responde em QUALQUER post — não é "espere o próximo reel". Com o
+  // pendingNextReel ligado junto, a campanha entrava na fila do cron e CONSUMIA o reel que era
+  // de outra campanha, deixando a outra órfã pra sempre.
+  const pendingNextReel = !d.postId && !d.matchAnyPost;
 
   const linkCreates = [
     ...(d.linkUrl
