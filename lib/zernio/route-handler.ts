@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
 import { Prisma } from '@/app/generated/prisma/client';
+import { getBaseUrl } from '@/lib/env';
 import { MetaApiError } from '@/lib/meta/client';
 import { canManageWorkspace, getCurrentWorkspaceContext, type WorkspaceContext } from '@/lib/workspace-access';
 
@@ -16,7 +17,18 @@ export function withZernioManagement(handler: (context: WorkspaceContext, reques
       if (!canManageWorkspace(context.role)) throw new ConnectionError('Only workspace owners and admins can manage the Zernio connection.', 403);
       if (request.method !== 'GET') {
         const origin = request.headers.get('origin');
-        if (origin && origin !== new URL(request.url).origin) throw new ConnectionError('Invalid request origin.', 403);
+        // ⚠️ NÃO comparar só com `new URL(request.url).origin`. Atrás de proxy reverso
+        // (Easypanel/Traefik, nginx, Cloudflare) o Next remonta request.url a partir da requisição
+        // INTERNA: o protocolo vira http e a porta muda. Aí o Origin legítimo do navegador
+        // (https://seu-dominio) nunca casa e quem está self-hosted leva "Invalid request origin."
+        // exatamente ao salvar a chave do Zernio — com tudo o resto certo.
+        // A referência confiável é a URL pública configurada (NEXTAUTH_URL), a mesma que o app já
+        // usa pra montar o webhook. O origin do request continua aceito pra não quebrar dev local.
+        const permitidas = new Set<string>();
+        for (const candidata of [getBaseUrl(), new URL(request.url).origin]) {
+          try { if (candidata) permitidas.add(new URL(candidata).origin); } catch { /* ignora inválida */ }
+        }
+        if (origin && !permitidas.has(origin)) throw new ConnectionError('Invalid request origin.', 403);
       }
       return await handler(context, request);
     } catch (error) {
